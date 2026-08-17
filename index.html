@@ -1739,7 +1739,7 @@ function renderConfig(){
   document.getElementById("cfg_condcom").value = state.config.condicionesComerciales||"";
   document.getElementById("cfgMsAccountLabel").textContent = (typeof cuentaActiva!=="undefined" && cuentaActiva) ? cuentaActiva.username : "Ninguna";
   document.getElementById("cfgMsFileLabel").textContent = (typeof excelFileRef!=="undefined" && excelFileRef) ? EXCEL_FILENAME : "Ninguno";
-  document.getElementById("cfgPdfFolderLabel").textContent = pdfFolderRef ? "2_Cotizaciones (OneDrive)" : "Ninguna";
+  document.getElementById("cfgPdfFolderLabel").textContent = "No configurado";
 }
 document.getElementById("btnGuardarConfig").addEventListener("click", ()=>{
   state.config.empresaCorreo = document.getElementById("cfg_correo").value.trim();
