@@ -2884,12 +2884,29 @@ async function iniciarAutenticacionFirebase(){
       document.getElementById("firebaseAuthUser").textContent=user.email||user.displayName||"Usuario autenticado";
       mostrarGateEstado("Acceso autorizado."); mostrarAplicacionAutenticada(); render();
       document.getElementById("btnSave").disabled=true; document.getElementById("btnSave").textContent="Guardado ✓";
-    }catch(err){ console.error("BusinessControl Firebase:",err); mostrarGateEstado("No se pudieron cargar los datos. Revisa Firestore y sus reglas.",true); ocultarAppHastaAutenticacion(); }
+    }catch(err){
+      console.error("BusinessControl Firebase:",err);
+      const code=err&&err.code?err.code:"sin-codigo";
+      const message=err&&err.message?err.message:"Error desconocido";
+      mostrarGateEstado("Error Firebase: "+code+" — "+message,true);
+      ocultarAppHastaAutenticacion();
+    }
   });
   btn.addEventListener("click",async()=>{
     btn.disabled=true; mostrarGateEstado("Abriendo Microsoft...");
-    try{ await api.signInWithPopup(api.auth,api.microsoftProvider); }
-    catch(err){ console.error("Firebase Microsoft login:",err); btn.disabled=false; mostrarGateEstado(err&&err.code==="auth/popup-closed-by-user"?"Inicio de sesión cancelado.":"No se pudo iniciar sesión con Microsoft. Revisa la configuración de Firebase.",true); }
+    try{
+      await api.signInWithPopup(api.auth,api.microsoftProvider);
+    }catch(err){
+      console.error("Firebase Microsoft login:",err);
+      btn.disabled=false;
+      const code=err&&err.code?err.code:"sin-codigo";
+      const message=err&&err.message?err.message:"Error desconocido";
+      if(code==="auth/popup-closed-by-user"){
+        mostrarGateEstado("Inicio de sesión cancelado.");
+      }else{
+        mostrarGateEstado("Error Firebase: "+code+" — "+message,true);
+      }
+    }
   },{once:true});
 }
 
