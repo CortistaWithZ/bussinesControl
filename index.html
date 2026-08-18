@@ -215,7 +215,7 @@
 </script>
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
-  import { getAuth, onAuthStateChanged, signInWithPopup, signOut, OAuthProvider } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
+  import { getAuth, onAuthStateChanged, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, OAuthProvider } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
   import { getFirestore, doc, getDoc, collection, getDocs, writeBatch, setDoc } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
 
   const firebaseConfig = {
@@ -277,7 +277,7 @@
     return snap.exists()?snap.data():null;
   }
 
-  window.businessControlFirebase = {app:firebaseApp,auth:firebaseAuth,db:firebaseDb,microsoftProvider,onAuthStateChanged,signInWithPopup,signOut,loadStateFromFirestore,saveStateToFirestore,getUserAccess};
+  window.businessControlFirebase = {app:firebaseApp,auth:firebaseAuth,db:firebaseDb,microsoftProvider,onAuthStateChanged,signInWithPopup,signInWithRedirect,getRedirectResult,signOut,loadStateFromFirestore,saveStateToFirestore,getUserAccess};
   window.__resolveBusinessControlFirebase(window.businessControlFirebase);
 </script>
 </head>
@@ -2865,9 +2865,32 @@ async function iniciarAutenticacionFirebase(){
   let api;
   try{ api=await window.businessControlFirebaseReady; }catch(err){ console.error(err); mostrarGateEstado("No se pudo cargar Firebase. Recarga la página.",true); return; }
   const btn=document.getElementById("btnFirebaseLogin");
+  const isMobile = /Android|iPhone|iPad|iPod|Windows Phone/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+  // En un retorno desde Microsoft, Firebase restaura la sesión y
+  // onAuthStateChanged continuará el flujo normal. Consultamos también
+  // el resultado del redirect para capturar errores del proveedor.
+  if(isMobile){
+    try{
+      await api.getRedirectResult(api.auth);
+    }catch(err){
+      console.error("Firebase Microsoft redirect:",err);
+      const code=err&&err.code?err.code:"sin-codigo";
+      const message=err&&err.message?err.message:"Error desconocido";
+      mostrarGateEstado("Error Firebase: "+code+" — "+message,true);
+    }
+  }
+
   mostrarGateEstado("Comprobando sesión...");
   api.onAuthStateChanged(api.auth,async user=>{
-    if(!user){ ocultarAppHastaAutenticacion(); document.getElementById("firebaseAuthUser").textContent=""; mostrarGateEstado("Necesitas iniciar sesión para continuar."); btn.disabled=false; return; }
+    if(!user){
+      ocultarAppHastaAutenticacion();
+      document.getElementById("firebaseAuthUser").textContent="";
+      mostrarGateEstado("Necesitas iniciar sesión para continuar.");
+      btn.disabled=false;
+      return;
+    }
     try{
       mostrarGateEstado("Verificando autorización...");
       const access=await api.getUserAccess(user.uid);
@@ -2893,8 +2916,14 @@ async function iniciarAutenticacionFirebase(){
     }
   });
   btn.addEventListener("click",async()=>{
-    btn.disabled=true; mostrarGateEstado("Abriendo Microsoft...");
+    btn.disabled=true;
     try{
+      if(isMobile){
+        mostrarGateEstado("Abriendo Microsoft...");
+        await api.signInWithRedirect(api.auth,api.microsoftProvider);
+        return;
+      }
+      mostrarGateEstado("Abriendo Microsoft...");
       await api.signInWithPopup(api.auth,api.microsoftProvider);
     }catch(err){
       console.error("Firebase Microsoft login:",err);
