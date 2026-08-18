@@ -245,10 +245,20 @@
   // por lo que normalizamos los Timestamp al cargar los documentos.
   function normalizeFirestoreValue(v){
     if(Array.isArray(v)) return v.map(normalizeFirestoreValue);
-    if(v && typeof v.toDate === "function") return v.toDate().toISOString().slice(0,10);
+    if(v && typeof v.toDate === "function"){
+      const d=v.toDate();
+      return d instanceof Date && !isNaN(d.getTime()) ? d.toISOString().slice(0,10) : v;
+    }
     if(v && typeof v === "object"){
+      // Compatibilidad con Timestamp serializado previamente como objeto.
+      const seconds = typeof v.seconds === "number" ? v.seconds :
+                      (typeof v._seconds === "number" ? v._seconds : null);
+      if(seconds !== null){
+        const d=new Date(seconds*1000);
+        if(!isNaN(d.getTime())) return d.toISOString().slice(0,10);
+      }
       const o={};
-      Object.entries(v).forEach(([k,x])=>{ if(x!==undefined) o[k]=normalizeFirestoreValue(x); });
+      Object.entries(v).forEach(([k,x])=>{ if(x!==undefined)o[k]=normalizeFirestoreValue(x); });
       return o;
     }
     return v;
@@ -1637,18 +1647,44 @@ document.getElementById("btnNuevoGasto").addEventListener("click", ()=>abrirModa
    BALANCE DEL NEGOCIO
    ========================================================================= */
 function fechaISO(fecha){
-  if(!fecha) return "";
-  if(typeof fecha === "string") return fecha.slice(0,10);
-  if(fecha instanceof Date) return isNaN(fecha.getTime()) ? "" : fecha.toISOString().slice(0,10);
-  if(fecha && typeof fecha.toDate === "function"){
-    const d = fecha.toDate();
-    return d instanceof Date && !isNaN(d.getTime()) ? d.toISOString().slice(0,10) : "";
-  }
-  if(fecha && typeof fecha === "object" && typeof fecha.seconds === "number"){
-    const d = new Date(fecha.seconds * 1000);
+  if(fecha===null || fecha===undefined || fecha==="") return "";
+  if(typeof fecha === "string"){
+    // Ya es ISO (YYYY-MM-DD) o una fecha ISO con hora.
+    const m=fecha.match(/^(\d{4}-\d{2}-\d{2})/);
+    if(m) return m[1];
+    const d=new Date(fecha);
     return isNaN(d.getTime()) ? "" : d.toISOString().slice(0,10);
   }
-  return String(fecha).slice(0,10);
+  if(typeof fecha === "number"){
+    // Acepta epoch en segundos o milisegundos.
+    const ms=fecha < 100000000000 ? fecha*1000 : fecha;
+    const d=new Date(ms);
+    return isNaN(d.getTime()) ? "" : d.toISOString().slice(0,10);
+  }
+  if(fecha instanceof Date) return isNaN(fecha.getTime()) ? "" : fecha.toISOString().slice(0,10);
+  if(fecha && typeof fecha.toDate === "function"){
+    const d=fecha.toDate();
+    return d instanceof Date && !isNaN(d.getTime()) ? d.toISOString().slice(0,10) : "";
+  }
+  if(fecha && typeof fecha === "object"){
+    const seconds=typeof fecha.seconds === "number" ? fecha.seconds :
+                  (typeof fecha._seconds === "number" ? fecha._seconds : null);
+    if(seconds!==null){
+      const d=new Date(seconds*1000);
+      if(!isNaN(d.getTime())) return d.toISOString().slice(0,10);
+    }
+  }
+  return "";
+}
+function normalizarFechasState(){
+  const campos={
+    folios:["fechaSolicitud","fechaEsperandoCotizacion","fechaCotizacionRecibida","fechaPropuestaEnviada","fechaOCRecibida","fechaFacturaGenerada","fechaProbablePago","fechaMaterialEntregado","fechaPagoRecibido","fechaComplementoGenerado","fechaFinalizada","fechaCancelacion"],
+    acciones:["fecha","fechaCompletada","fechaEliminada"],
+    gastos:["fecha"], proveedores:["fecha"], ingresos:["fecha"], inyecciones:["fecha"], pos:["fecha"]
+  };
+  Object.entries(campos).forEach(([coleccion,fields])=>{
+    (state[coleccion]||[]).forEach(item=>fields.forEach(c=>{ if(item[c]!==undefined && item[c]!==null) item[c]=fechaISO(item[c]); }));
+  });
 }
 function mesDeFecha(fecha){ return fechaISO(fecha).slice(0,7); } // "YYYY-MM"
 function nombreMes(yyyyMM){
@@ -2935,6 +2971,7 @@ async function iniciarAutenticacionFirebase(){
       }
       mostrarGateEstado("Cargando datos de BusinessControl...");
       state=await api.loadStateFromFirestore();
+      normalizarFechasState();
       currentCR=null; loadedFileName=null; isDirty=false;
       const fs=document.getElementById("fileStatus"); if(fs){fs.textContent="Conectado a Firebase · "+(user.email||"usuario autorizado"); fs.classList.add("connected");}
       document.getElementById("firebaseAuthUser").textContent=user.email||user.displayName||"Usuario autenticado";
