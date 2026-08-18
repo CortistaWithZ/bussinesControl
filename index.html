@@ -239,6 +239,20 @@
     if(v && typeof v === "object"){ const o={}; Object.entries(v).forEach(([k,x])=>{if(x!==undefined)o[k]=clean(x);}); return o; }
     return v;
   }
+
+  // Firestore devuelve los campos de fecha como Timestamp.
+  // BusinessControl trabaja internamente con fechas YYYY-MM-DD,
+  // por lo que normalizamos los Timestamp al cargar los documentos.
+  function normalizeFirestoreValue(v){
+    if(Array.isArray(v)) return v.map(normalizeFirestoreValue);
+    if(v && typeof v.toDate === "function") return v.toDate().toISOString().slice(0,10);
+    if(v && typeof v === "object"){
+      const o={};
+      Object.entries(v).forEach(([k,x])=>{ if(x!==undefined) o[k]=normalizeFirestoreValue(x); });
+      return o;
+    }
+    return v;
+  }
   function idFor(key,item){
     if(key==="clientes") return String(item.id);
     if(key==="folios") return String(item.cr);
@@ -250,7 +264,7 @@
     const result={clientes:[],folios:[],detalles:[],acciones:[],gastos:[],proveedores:[],ingresos:[],inyecciones:[],pos:[],config:{empresaCorreo:"",empresaTelefono:"",vigencia:"15 días",formaPago:"",condicionEntrega:"",condicionesComerciales:""}};
     for(const [key,name] of Object.entries(COLLECTIONS)){
       const snap=await getDocs(collection(firebaseDb,name));
-      result[key]=snap.docs.map(d=>d.data());
+      result[key]=snap.docs.map(d=>normalizeFirestoreValue(d.data()));
     }
     const cfg=await getDoc(doc(firebaseDb,"config","general"));
     if(cfg.exists()) result.config={...result.config,...cfg.data()};
@@ -987,7 +1001,12 @@ async function guardarExcelEnOneDrive(esAuto){
 function N(v){ const n = parseFloat(v); return isNaN(n) ? 0 : n; }
 function money(v){ return "$" + N(v).toLocaleString("es-MX",{minimumFractionDigits:2, maximumFractionDigits:2}); }
 function todayISO(){ return new Date().toISOString().slice(0,10); }
-function fmtDate(iso){ if(!iso) return "-"; const d = new Date(iso+"T00:00:00"); return d.toLocaleDateString("es-MX",{day:"2-digit",month:"2-digit",year:"numeric"}); }
+function fmtDate(iso){
+  const valor = fechaISO(iso);
+  if(!valor) return "-";
+  const d = new Date(valor+"T00:00:00");
+  return isNaN(d.getTime()) ? "-" : d.toLocaleDateString("es-MX",{day:"2-digit",month:"2-digit",year:"numeric"});
+}
 function addDays(iso, days){ if(!iso || days===""||days===null||days===undefined) return null; const d=new Date(iso+"T00:00:00"); d.setDate(d.getDate()+N(days)); return d.toISOString().slice(0,10); }
 function uid(prefix){ return prefix + "-" + Math.random().toString(36).slice(2,8); }
 
@@ -1617,7 +1636,21 @@ document.getElementById("btnNuevoGasto").addEventListener("click", ()=>abrirModa
 /* =========================================================================
    BALANCE DEL NEGOCIO
    ========================================================================= */
-function mesDeFecha(fecha){ return (fecha||"").slice(0,7); } // "YYYY-MM"
+function fechaISO(fecha){
+  if(!fecha) return "";
+  if(typeof fecha === "string") return fecha.slice(0,10);
+  if(fecha instanceof Date) return isNaN(fecha.getTime()) ? "" : fecha.toISOString().slice(0,10);
+  if(fecha && typeof fecha.toDate === "function"){
+    const d = fecha.toDate();
+    return d instanceof Date && !isNaN(d.getTime()) ? d.toISOString().slice(0,10) : "";
+  }
+  if(fecha && typeof fecha === "object" && typeof fecha.seconds === "number"){
+    const d = new Date(fecha.seconds * 1000);
+    return isNaN(d.getTime()) ? "" : d.toISOString().slice(0,10);
+  }
+  return String(fecha).slice(0,10);
+}
+function mesDeFecha(fecha){ return fechaISO(fecha).slice(0,7); } // "YYYY-MM"
 function nombreMes(yyyyMM){
   if(!yyyyMM) return "Sin fecha";
   const [y,m] = yyyyMM.split("-");
@@ -1667,7 +1700,7 @@ function renderBalance(){
     ...state.ingresos.map(i=>({tipo:"Ingreso", fecha:i.fecha, concepto:i.concepto||("Pago recibido - "+i.cr), monto:N(i.monto), id:i.id})),
     ...state.inyecciones.map(i=>({tipo:"Inyección", fecha:i.fecha, concepto:"Inyección de "+i.nombre+(i.notas?(" — "+i.notas):""), monto:N(i.monto), id:i.id, borrable:true})),
     ...state.gastos.map(g=>({tipo:"Gasto", fecha:g.fecha, concepto:g.concepto+(g.crAsignada?(" (asignado a "+g.crAsignada+")"):""), monto:-N(g.costoTotal)}))
-  ].sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||""));
+  ].sort((a,b)=>fechaISO(b.fecha).localeCompare(fechaISO(a.fecha)));
 
   if(movimientos.length===0){
     document.getElementById("balanceMovimientosWrap").innerHTML = `<div class="empty-state"><div class="ic">&#128200;</div><h3>Sin movimientos</h3><p>Los ingresos aparecen solos cuando marcas una CR como pagada; agrega gastos o inyecciones para verlos aquí.</p></div>`;
