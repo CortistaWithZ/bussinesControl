@@ -274,7 +274,7 @@
     const result={clientes:[],folios:[],detalles:[],acciones:[],gastos:[],proveedores:[],ingresos:[],inyecciones:[],pos:[],config:{empresaCorreo:"",empresaTelefono:"",vigencia:"15 días",formaPago:"",condicionEntrega:"",condicionesComerciales:""}};
     for(const [key,name] of Object.entries(COLLECTIONS)){
       const snap=await getDocs(collection(firebaseDb,name));
-      result[key]=snap.docs.map(d=>normalizeFirestoreValue(d.data()));
+      result[key]=snap.docs.filter(d=>d.id!=="__template__").map(d=>normalizeFirestoreValue(d.data()));
     }
     const cfg=await getDoc(doc(firebaseDb,"config","general"));
     if(cfg.exists()) result.config={...result.config,...cfg.data()};
@@ -292,8 +292,31 @@
       await b.commit();
     }
   }
+  async function saveClientToFirestore(cliente){
+    const data = {
+      empresa: String(cliente.empresa||""),
+      contactoPrincipal: String(cliente.contacto||""),
+      correoPrincipal: String(cliente.correo||""),
+      telefonoPrincipal: String(cliente.telefono||""),
+      direccion: String(cliente.direccion||""),
+      rfc: String(cliente.rfc||""),
+      diasCredito: Number(cliente.diasCredito)||0,
+      notas: String(cliente.notas||"")
+    };
+    await setDoc(doc(firebaseDb,"clientes",String(cliente.id)), clean(data));
+  }
+
   async function saveStateToFirestore(snapshot){
-    for(const [key,name] of Object.entries(COLLECTIONS)) await syncCollection(name,snapshot[key]||[],key);
+    for(const [key,name] of Object.entries(COLLECTIONS)) {
+      const items = (snapshot[key]||[]).filter(item => {
+        if(key==="clientes") return item && item.id;
+        if(key==="folios") return item && item.cr;
+        if(key==="detalles") return item && item.cr && item.noRenglon!==undefined;
+        if(key==="pos") return item && item.folio;
+        return item && item.id;
+      });
+      await syncCollection(name,items,key);
+    }
     await setDoc(doc(firebaseDb,"config","general"),clean(snapshot.config||{}));
   }
   async function getUserAccess(uid){
@@ -301,7 +324,7 @@
     return snap.exists()?snap.data():null;
   }
 
-  window.businessControlFirebase = {app:firebaseApp,auth:firebaseAuth,db:firebaseDb,microsoftProvider,onAuthStateChanged,signInWithPopup,signInWithRedirect,getRedirectResult,signOut,loadStateFromFirestore,saveStateToFirestore,getUserAccess};
+  window.businessControlFirebase = {app:firebaseApp,auth:firebaseAuth,db:firebaseDb,microsoftProvider,onAuthStateChanged,signInWithPopup,signInWithRedirect,getRedirectResult,signOut,loadStateFromFirestore,saveStateToFirestore,saveClientToFirestore,getUserAccess};
   window.__resolveBusinessControlFirebase(window.businessControlFirebase);
 </script>
 </head>
@@ -1341,9 +1364,10 @@ function abrirModalCliente(id){
     </div>
   `;
   document.getElementById("cf_cancel").addEventListener("click", cerrarModales);
-  document.getElementById("cf_save").addEventListener("click", ()=>{
+  document.getElementById("cf_save").addEventListener("click", async ()=>{
     const empresa = document.getElementById("cf_empresa").value.trim();
     if(!empresa){ showToast("Escribe el nombre de la empresa", true); return; }
+
     const data = {
       id: cli ? cli.id : nextClienteId(empresa),
       empresa,
@@ -1355,12 +1379,30 @@ function abrirModalCliente(id){
       diasCredito: N(document.getElementById("cf_credito").value),
       notas: document.getElementById("cf_notas").value.trim()
     };
-    if(cli){ Object.assign(cli, data); } else { state.clientes.push(data); }
-    const solicitudEstabaAbierta = document.getElementById("modalSolicitud").classList.contains("active");
-    document.getElementById("modalCliente").classList.remove("active");
-    markDirty(); render();
-    if(solicitudEstabaAbierta) pintarFormSolicitud();
-    showToast("Cliente guardado: "+data.id);
+
+    const saveBtn = document.getElementById("cf_save");
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Guardando...";
+
+    try{
+      const api = await window.businessControlFirebaseReady;
+      await api.saveClientToFirestore(data);
+
+      if(cli){ Object.assign(cli, data); }
+      else { state.clientes.push(data); }
+
+      const solicitudEstabaAbierta = document.getElementById("modalSolicitud").classList.contains("active");
+      document.getElementById("modalCliente").classList.remove("active");
+      render();
+      if(solicitudEstabaAbierta) pintarFormSolicitud();
+
+      showToast("Cliente guardado en Firebase: "+data.id);
+    }catch(err){
+      console.error("Firestore save client:", err);
+      showToast("No se pudo guardar el cliente en Firebase", true);
+      saveBtn.disabled = false;
+      saveBtn.textContent = "Guardar cliente";
+    }
   });
   document.getElementById("modalCliente").classList.add("active");
 }
