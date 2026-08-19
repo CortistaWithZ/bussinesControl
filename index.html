@@ -860,6 +860,8 @@ const msalInstance = new msal.PublicClientApplication({
 const msalListo = msalInstance.initialize(); // se dispara una sola vez; todo lo demás lo espera
 
 let cuentaActiva = null;
+let msalInteractionPromise = null;
+let msalRedirectHandled = false;
 let excelFileRef = null; // {driveId, itemId, lastModifiedDateTime}
 
 function cuentaAutorizada(username){
@@ -888,17 +890,19 @@ async function restaurarSesionMicrosoft(){
   try{
     await msalListo;
 
-    // Completa cualquier loginRedirect pendiente.
-    const redirectResult = await msalInstance.handleRedirectPromise();
-    if(redirectResult && redirectResult.account){
-      cuentaActiva = redirectResult.account;
-      msalInstance.setActiveAccount(cuentaActiva);
-    }else{
-      const cuentas = msalInstance.getAllAccounts();
-      if(cuentas.length){
-        cuentaActiva = msalInstance.getActiveAccount() || cuentas[0];
+    if(!msalRedirectHandled){
+      msalRedirectHandled = true;
+      const redirectResult = await msalInstance.handleRedirectPromise();
+      if(redirectResult && redirectResult.account){
+        cuentaActiva = redirectResult.account;
         msalInstance.setActiveAccount(cuentaActiva);
       }
+    }
+
+    const cuentas = msalInstance.getAllAccounts();
+    if(!cuentaActiva && cuentas.length){
+      cuentaActiva = msalInstance.getActiveAccount() || cuentas[0];
+      msalInstance.setActiveAccount(cuentaActiva);
     }
 
     actualizarUILogin();
@@ -910,7 +914,24 @@ async function restaurarSesionMicrosoft(){
 async function iniciarSesionMicrosoft(){
   try{
     await msalListo;
-    await msalInstance.loginRedirect({ scopes: MSAL_SCOPES });
+    if(msalInteractionPromise) return;
+    msalInteractionPromise = (async()=>{
+      try{
+        const login = await msalInstance.loginPopup({
+          scopes: MSAL_SCOPES,
+          prompt: "select_account"
+        });
+        cuentaActiva = login.account || msalInstance.getActiveAccount() || msalInstance.getAllAccounts()[0] || null;
+        if(cuentaActiva) msalInstance.setActiveAccount(cuentaActiva);
+        actualizarUILogin();
+      }catch(err){
+        console.error(err);
+        showToast("No se pudo iniciar sesión con Microsoft", true);
+      }finally{
+        msalInteractionPromise = null;
+      }
+    })();
+    await msalInteractionPromise;
   }catch(err){
     console.error(err);
     showToast("No se pudo iniciar sesión con Microsoft", true);
@@ -930,28 +951,27 @@ async function cerrarSesionMicrosoft(){
 }
 async function obtenerTokenGraph(){
   await msalListo;
+  await restaurarSesionMicrosoft();
 
-  // Firebase y MSAL mantienen sesiones independientes.
-  // Si ya existe una sesión MSAL en este navegador, la reutilizamos.
   if(!cuentaActiva){
-    const cuentas = msalInstance.getAllAccounts();
-    if(cuentas.length){
-      cuentaActiva = cuentas[0];
-      msalInstance.setActiveAccount(cuentaActiva);
-      actualizarUILogin();
+    if(msalInteractionPromise) await msalInteractionPromise;
+
+    if(!cuentaActiva){
+      msalInteractionPromise = (async()=>{
+        try{
+          const login = await msalInstance.loginPopup({
+            scopes: MSAL_SCOPES,
+            prompt: "select_account"
+          });
+          cuentaActiva = login.account || msalInstance.getActiveAccount() || msalInstance.getAllAccounts()[0] || null;
+          if(cuentaActiva) msalInstance.setActiveAccount(cuentaActiva);
+          actualizarUILogin();
+        }finally{
+          msalInteractionPromise = null;
+        }
+      })();
+      await msalInteractionPromise;
     }
-  }
-
-  // Si todavía no hay sesión Graph, la iniciamos aquí.
-  if(!cuentaActiva){
-    const login = await msalInstance.loginPopup({
-      scopes: MSAL_SCOPES,
-      prompt: "select_account"
-    });
-
-    cuentaActiva = login.account || msalInstance.getActiveAccount() || msalInstance.getAllAccounts()[0] || null;
-    if(cuentaActiva) msalInstance.setActiveAccount(cuentaActiva);
-    actualizarUILogin();
   }
 
   if(!cuentaActiva) throw new Error("No se pudo establecer la cuenta de Microsoft para OneDrive.");
@@ -963,12 +983,22 @@ async function obtenerTokenGraph(){
     });
     return res.accessToken;
   }catch(err){
-    // Si Microsoft requiere interacción/consentimiento, abrimos el popup.
-    const res = await msalInstance.acquireTokenPopup({
-      scopes: MSAL_SCOPES,
-      account: cuentaActiva,
-      prompt: "select_account"
-    });
+    if(msalInteractionPromise) await msalInteractionPromise;
+
+    if(!msalInteractionPromise){
+      msalInteractionPromise = (async()=>{
+        try{
+          return await msalInstance.acquireTokenPopup({
+            scopes: MSAL_SCOPES,
+            account: cuentaActiva,
+            prompt: "select_account"
+          });
+        }finally{
+          msalInteractionPromise = null;
+        }
+      })();
+    }
+    const res = await msalInteractionPromise;
     return res.accessToken;
   }
 }
