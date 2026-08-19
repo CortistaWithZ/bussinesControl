@@ -884,6 +884,29 @@ function actualizarUILogin(){
   }
 }
 document.getElementById("btnRecargarExcel").addEventListener("click", cargarExcelDesdeOneDrive);
+async function restaurarSesionMicrosoft(){
+  try{
+    await msalListo;
+
+    // Completa cualquier loginRedirect pendiente.
+    const redirectResult = await msalInstance.handleRedirectPromise();
+    if(redirectResult && redirectResult.account){
+      cuentaActiva = redirectResult.account;
+      msalInstance.setActiveAccount(cuentaActiva);
+    }else{
+      const cuentas = msalInstance.getAllAccounts();
+      if(cuentas.length){
+        cuentaActiva = msalInstance.getActiveAccount() || cuentas[0];
+        msalInstance.setActiveAccount(cuentaActiva);
+      }
+    }
+
+    actualizarUILogin();
+  }catch(err){
+    console.error("Restaurar sesión Microsoft:", err);
+  }
+}
+
 async function iniciarSesionMicrosoft(){
   try{
     await msalListo;
@@ -893,6 +916,8 @@ async function iniciarSesionMicrosoft(){
     showToast("No se pudo iniciar sesión con Microsoft", true);
   }
 }
+restaurarSesionMicrosoft();
+
 async function cerrarSesionMicrosoft(){
   const account = cuentaActiva;
   cuentaActiva = null; excelFileRef = null;
@@ -904,15 +929,47 @@ async function cerrarSesionMicrosoft(){
   try{ await msalListo; await msalInstance.logoutRedirect({ account }); }catch(err){ /* ignorar */ }
 }
 async function obtenerTokenGraph(){
-  if(!cuentaActiva) return null;
+  await msalListo;
+
+  // Firebase y MSAL mantienen sesiones independientes.
+  // Si ya existe una sesión MSAL en este navegador, la reutilizamos.
+  if(!cuentaActiva){
+    const cuentas = msalInstance.getAllAccounts();
+    if(cuentas.length){
+      cuentaActiva = cuentas[0];
+      msalInstance.setActiveAccount(cuentaActiva);
+      actualizarUILogin();
+    }
+  }
+
+  // Si todavía no hay sesión Graph, la iniciamos aquí.
+  if(!cuentaActiva){
+    const login = await msalInstance.loginPopup({
+      scopes: MSAL_SCOPES,
+      prompt: "select_account"
+    });
+
+    cuentaActiva = login.account || msalInstance.getActiveAccount() || msalInstance.getAllAccounts()[0] || null;
+    if(cuentaActiva) msalInstance.setActiveAccount(cuentaActiva);
+    actualizarUILogin();
+  }
+
+  if(!cuentaActiva) throw new Error("No se pudo establecer la cuenta de Microsoft para OneDrive.");
+
   try{
-    await msalListo;
-    const res = await msalInstance.acquireTokenSilent({ scopes: MSAL_SCOPES, account: cuentaActiva });
+    const res = await msalInstance.acquireTokenSilent({
+      scopes: MSAL_SCOPES,
+      account: cuentaActiva
+    });
     return res.accessToken;
   }catch(err){
-    try{ await msalInstance.acquireTokenRedirect({ scopes: MSAL_SCOPES, account: cuentaActiva }); }
-    catch(err2){ console.error(err2); }
-    return null;
+    // Si Microsoft requiere interacción/consentimiento, abrimos el popup.
+    const res = await msalInstance.acquireTokenPopup({
+      scopes: MSAL_SCOPES,
+      account: cuentaActiva,
+      prompt: "select_account"
+    });
+    return res.accessToken;
   }
 }
 async function graphFetch(path, options){
@@ -1049,11 +1106,8 @@ async function configurarCarpetaPdf(){
     return;
   }
 
-  if(!cuentaActiva){
-    showToast("Conecta primero tu cuenta de Microsoft", true);
-    return;
-  }
-
+  // No dependemos de la sesión de Firebase para Graph.
+  // obtenerTokenGraph() iniciará Microsoft si todavía no existe una sesión MSAL.
   btn.disabled = true;
   btn.textContent = "Conectando...";
   status.textContent = "Validando carpeta en OneDrive...";
