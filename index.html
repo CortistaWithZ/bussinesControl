@@ -322,7 +322,7 @@
   }
 
   async function loadStateFromFirestore(){
-    const result={clientes:[],folios:[],detalles:[],acciones:[],gastos:[],proveedores:[],ingresos:[],inyecciones:[],pos:[],config:{empresaCorreo:"",empresaTelefono:"",vigencia:"15 días",formaPago:"",condicionEntrega:"",condicionesComerciales:""}};
+    const result={clientes:[],folios:[],detalles:[],acciones:[],gastos:[],proveedores:[],ingresos:[],inyecciones:[],pos:[],config:{empresaCorreo:"",empresaTelefono:"",vigencia:"15 días",formaPago:"",condicionEntrega:"",condicionesComerciales:"",pdfFolderUrl:"https://1drv.ms/f/c/5d74b477fff6ebb3/IgB3bF79JCVmSL3FVQuO8oyMATi43grB816IhLg4XyvAN0k?e=FXaP4T",pdfFolderName:"",pdfFolderDriveId:"",pdfFolderItemId:""}};
     for(const [key,name] of Object.entries(COLLECTIONS)){
       const snap=await getDocs(collection(firebaseDb,name));
       result[key]=snap.docs
@@ -361,6 +361,8 @@
 
   async function saveStateToFirestore(snapshot){
     for(const [key,name] of Object.entries(COLLECTIONS)) {
+      if(!Object.prototype.hasOwnProperty.call(snapshot,key)) continue;
+
       const items = (snapshot[key]||[]).filter(item => {
         if(key==="clientes") return item && item.id;
         if(key==="folios") return item && item.cr;
@@ -368,9 +370,13 @@
         if(key==="pos") return item && item.folio;
         return item && item.id;
       });
+
       await syncCollection(name,items,key);
     }
-    await setDoc(doc(firebaseDb,"config","general"),clean(snapshot.config||{}));
+
+    if(Object.prototype.hasOwnProperty.call(snapshot,"config")){
+      await setDoc(doc(firebaseDb,"config","general"),clean(snapshot.config||{}));
+    }
   }
   async function getUserAccess(uid){
     const snap=await getDoc(doc(firebaseDb,"users",uid));
@@ -537,17 +543,28 @@
 
     <div class="view" id="view-config">
       <h1 class="page-title">Configuración</h1>
-      <p class="page-sub">Datos que se usan al generar la propuesta en PDF. Se guardan dentro del mismo Excel.</p>
+      <p class="page-sub">Datos que se usan al generar la propuesta en PDF. Se guardan en Firebase.</p>
       <div class="card">
         <h3>Sesión de Microsoft (OneDrive)</h3>
-        <p class="small muted" style="margin:0 0 10px;">La app se conecta a tu Excel guardado en OneDrive usando tu cuenta de Microsoft autorizada. La sesión se recuerda sola en este dispositivo/navegador — no hace falta iniciar sesión cada vez que abres la app.</p>
+        <p class="small muted" style="margin:0 0 10px;">La app se conecta a OneDrive usando tu cuenta de Microsoft autorizada. La sesión se recuerda sola en este dispositivo/navegador — no hace falta iniciar sesión cada vez que abres la app.</p>
         <div class="kv"><span class="k">Cuenta conectada</span><span class="v mono" id="cfgMsAccountLabel">Ninguna</span></div>
         <div class="kv"><span class="k">Archivo conectado</span><span class="v mono" id="cfgMsFileLabel">Ninguno</span></div>
         <div class="kv"><span class="k">Carpeta de PDFs conectada</span><span class="v mono" id="cfgPdfFolderLabel">Ninguna</span></div>
       </div>
       <div class="card">
         <h3>Carpeta donde se guardan los PDF de propuestas</h3>
-        <p class="small muted" style="margin:0;">Los PDF de propuestas se guardan automáticamente en la carpeta "2_Cotizaciones" de OneDrive, usando la misma sesión de Microsoft — no requiere elegir nada, ni volver a conectar cada vez que abres la app.</p>
+        <p class="small muted" style="margin:0 0 10px;">
+          Pega aquí el enlace de la carpeta de OneDrive donde quieres guardar automáticamente las propuestas.
+          La cuenta de Microsoft conectada debe tener acceso a esa carpeta.
+        </p>
+        <div class="field">
+          <label>Enlace de carpeta de OneDrive</label>
+          <input id="cfg_pdf_folder_url" placeholder="https://1drv.ms/f/...">
+        </div>
+        <div class="flex-between" style="margin-top:10px;">
+          <span class="small muted" id="cfgPdfFolderStatus">Sin configurar</span>
+          <button class="btn btn-primary" id="btnConfigPdfFolder">Conectar carpeta</button>
+        </div>
       </div>
       <div class="card">
         <h3>Datos de contacto de tu empresa (van en el pie de la propuesta)</h3>
@@ -965,6 +982,154 @@ function codificarShareToken(url){
   // https://learn.microsoft.com/graph/api/shares-get
   const base64 = btoa(url).replace(/=/g,"").replace(/\//g,"_").replace(/\+/g,"-");
   return "u!"+base64;
+}
+
+let pdfFolderRef = null; // {driveId,itemId,name}
+
+async function resolverCarpetaPdf(){
+  const cfg = state && state.config ? state.config : {};
+  const url = (cfg.pdfFolderUrl || "").trim();
+
+  if(!url){
+    pdfFolderRef = null;
+    return null;
+  }
+
+  // Si ya tenemos la referencia guardada, la usamos directamente.
+  if(cfg.pdfFolderDriveId && cfg.pdfFolderItemId){
+    pdfFolderRef = {
+      driveId: cfg.pdfFolderDriveId,
+      itemId: cfg.pdfFolderItemId,
+      name: cfg.pdfFolderName || "Carpeta de PDFs"
+    };
+    return pdfFolderRef;
+  }
+
+  if(!cuentaActiva) return null;
+
+  try{
+    const token = codificarShareToken(url);
+    const res = await graphFetch(`/shares/${token}/driveItem`);
+    const item = await res.json();
+
+    if(!item || !item.folder){
+      throw new Error("El enlace de OneDrive no corresponde a una carpeta.");
+    }
+
+    pdfFolderRef = {
+      driveId: item.parentReference && item.parentReference.driveId,
+      itemId: item.id,
+      name: item.name || "Carpeta de PDFs"
+    };
+
+    if(!pdfFolderRef.driveId || !pdfFolderRef.itemId){
+      throw new Error("Microsoft Graph no devolvió la referencia de la carpeta.");
+    }
+
+    // Guardamos la referencia para no tener que resolver el enlace cada vez.
+    state.config.pdfFolderDriveId = pdfFolderRef.driveId;
+    state.config.pdfFolderItemId = pdfFolderRef.itemId;
+    state.config.pdfFolderName = pdfFolderRef.name;
+
+    return pdfFolderRef;
+  }catch(err){
+    pdfFolderRef = null;
+    throw err;
+  }
+}
+
+async function configurarCarpetaPdf(){
+  const input = document.getElementById("cfg_pdf_folder_url");
+  const btn = document.getElementById("btnConfigPdfFolder");
+  const status = document.getElementById("cfgPdfFolderStatus");
+  const url = (input.value || "").trim();
+
+  if(!url){
+    showToast("Pega primero el enlace de la carpeta de OneDrive", true);
+    return;
+  }
+
+  if(!cuentaActiva){
+    showToast("Conecta primero tu cuenta de Microsoft", true);
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Conectando...";
+  status.textContent = "Validando carpeta en OneDrive...";
+
+  try{
+    // Si cambia el enlace, eliminamos la referencia anterior.
+    state.config.pdfFolderUrl = url;
+    state.config.pdfFolderDriveId = "";
+    state.config.pdfFolderItemId = "";
+    state.config.pdfFolderName = "";
+
+    const ref = await resolverCarpetaPdf();
+    if(!ref) throw new Error("No se pudo resolver la carpeta.");
+
+    state.config.pdfFolderUrl = url;
+    state.config.pdfFolderDriveId = ref.driveId;
+    state.config.pdfFolderItemId = ref.itemId;
+    state.config.pdfFolderName = ref.name;
+
+    const api = await window.businessControlFirebaseReady;
+    await api.saveStateToFirestore({config:state.config});
+
+    status.textContent = "Conectada: " + ref.name;
+    document.getElementById("cfgPdfFolderLabel").textContent = ref.name;
+    btn.textContent = "Carpeta conectada";
+    showToast("Carpeta de PDFs conectada: " + ref.name);
+  }catch(err){
+    console.error("Configurar carpeta PDF:", err);
+    state.config.pdfFolderDriveId = "";
+    state.config.pdfFolderItemId = "";
+    state.config.pdfFolderName = "";
+    pdfFolderRef = null;
+    status.textContent = "No se pudo conectar";
+    btn.textContent = "Conectar carpeta";
+    showToast("No se pudo conectar la carpeta de OneDrive: " + (err.message || err), true);
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+async function guardarPdfBlob(blob, filename){
+  if(!cuentaActiva){
+    throw new Error("No hay una sesión de Microsoft activa.");
+  }
+
+  let ref = pdfFolderRef;
+
+  if(!ref){
+    ref = await resolverCarpetaPdf();
+  }
+
+  if(!ref){
+    throw new Error("No hay una carpeta de PDFs configurada. Ve a Configuración y conecta una carpeta de OneDrive.");
+  }
+
+  const token = await obtenerTokenGraph();
+  if(!token) throw new Error("No se pudo obtener el token de Microsoft Graph.");
+
+  const encodedName = encodeURIComponent(filename).replace(/%2F/g,"/");
+  const url = `https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(ref.driveId)}/items/${encodeURIComponent(ref.itemId)}:/${encodedName}:/content`;
+
+  const res = await fetch(url,{
+    method:"PUT",
+    headers:{
+      "Authorization":"Bearer "+token,
+      "Content-Type":"application/pdf"
+    },
+    body:blob
+  });
+
+  if(!res.ok){
+    const txt = await res.text().catch(()=>"");
+    throw new Error("Graph "+res.status+": "+txt);
+  }
+
+  return await res.json();
 }
 async function buscarPorLinkCompartido(){
   if(!EXCEL_SHARE_URL) return null;
@@ -1901,20 +2066,33 @@ function renderConfig(){
   document.getElementById("cfg_formapago").value = state.config.formaPago||"";
   document.getElementById("cfg_condentrega").value = state.config.condicionEntrega||"";
   document.getElementById("cfg_condcom").value = state.config.condicionesComerciales||"";
+  document.getElementById("cfg_pdf_folder_url").value = state.config.pdfFolderUrl||"";
   document.getElementById("cfgMsAccountLabel").textContent = (typeof cuentaActiva!=="undefined" && cuentaActiva) ? cuentaActiva.username : "Ninguna";
   document.getElementById("cfgMsFileLabel").textContent = (typeof excelFileRef!=="undefined" && excelFileRef) ? EXCEL_FILENAME : "Ninguno";
-  document.getElementById("cfgPdfFolderLabel").textContent = "No configurado";
+  document.getElementById("cfgPdfFolderLabel").textContent = (pdfFolderRef && pdfFolderRef.name) ? pdfFolderRef.name : (state.config.pdfFolderName || "No configurado");
+  document.getElementById("cfgPdfFolderStatus").textContent = (pdfFolderRef && pdfFolderRef.name) ? "Conectada: "+pdfFolderRef.name : (state.config.pdfFolderName ? "Configurada: "+state.config.pdfFolderName : "Sin configurar");
 }
-document.getElementById("btnGuardarConfig").addEventListener("click", ()=>{
+document.getElementById("btnGuardarConfig").addEventListener("click", async ()=>{
   state.config.empresaCorreo = document.getElementById("cfg_correo").value.trim();
   state.config.empresaTelefono = document.getElementById("cfg_telefono").value.trim();
   state.config.vigencia = document.getElementById("cfg_vigencia").value.trim();
   state.config.formaPago = document.getElementById("cfg_formapago").value.trim();
   state.config.condicionEntrega = document.getElementById("cfg_condentrega").value.trim();
   state.config.condicionesComerciales = document.getElementById("cfg_condcom").value.trim();
-  markDirty();
-  showToast("Configuración guardada");
+
+  try{
+    const api = await window.businessControlFirebaseReady;
+    await api.saveStateToFirestore({config:state.config});
+    isDirty = false;
+    showToast("Configuración guardada");
+  }catch(err){
+    console.error("Guardar configuración:",err);
+    markDirty();
+    showToast("No se pudo guardar la configuración",true);
+  }
 });
+
+document.getElementById("btnConfigPdfFolder").addEventListener("click", configurarCarpetaPdf);
 
 /* =========================================================================
    NUEVA SOLICITUD
@@ -3156,7 +3334,7 @@ function excelSerialToISO(v){
 
 function importarWorkbook(wb){
   state = {clientes:[], folios:[], detalles:[], acciones:[], gastos:[], proveedores:[], ingresos:[], inyecciones:[], pos:[],
-    config:{empresaCorreo:"", empresaTelefono:"", vigencia:"15 días", formaPago:"", condicionEntrega:"", condicionesComerciales:""}};
+    config:{empresaCorreo:"", empresaTelefono:"", vigencia:"15 días", formaPago:"", condicionEntrega:"", condicionesComerciales:"", pdfFolderUrl:"", pdfFolderName:"", pdfFolderDriveId:"", pdfFolderItemId:""}};
 
   if(wb.SheetNames.includes("Clientes")){
     const {map, filas} = leerHojaPorEncabezado(wb.Sheets["Clientes"], "ID_Cliente");
