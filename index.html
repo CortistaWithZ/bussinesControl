@@ -1062,9 +1062,10 @@ async function resolverCarpetaPdf(){
     return pdfFolderRef;
   }
 
-  if(!cuentaActiva) return null;
-
   try{
+    // graphFetch() obtiene/inicia la sesión de Microsoft Graph cuando hace falta.
+    // No debemos devolver null solo porque Firebase/MSAL todavía no tenga
+    // cuentaActiva: "Conectar carpeta" es precisamente quien inicia ese flujo.
     const token = codificarShareToken(url);
     const res = await graphFetch(`/shares/${token}/driveItem`);
     const item = await res.json();
@@ -1149,10 +1150,8 @@ async function configurarCarpetaPdf(){
 }
 
 async function guardarPdfBlob(blob, filename){
-  if(!cuentaActiva){
-    throw new Error("No hay una sesión de Microsoft activa.");
-  }
-
+  // obtenerTokenGraph() iniciará/reutilizará la sesión de Microsoft Graph.
+  // La sesión de Firebase no es suficiente para escribir en OneDrive.
   let ref = pdfFolderRef;
 
   if(!ref){
